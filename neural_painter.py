@@ -1,11 +1,4 @@
-#!/usr/bin/env python2
-# -*- coding: utf-8 -*-
-# $File: neural_painter.py
-# $Date: Thu Apr 07 10:39:34 2016 +0800
-# $Author: Xinyu Zhou <zxytim[at]gmail[dot]com>
-
 import argparse
-
 
 import theano
 import theano.tensor as T
@@ -18,6 +11,7 @@ import cv2
 eps = 1e-8
 
 NONLIN_TABLE = dict(
+    abs=abs,
     relu=T.nnet.relu,
     tanh=T.tanh,
     abs_tanh=lambda x: abs(T.tanh(x)),
@@ -27,7 +21,6 @@ NONLIN_TABLE = dict(
     cos=T.cos,
     sgn=T.sgn,
     sort=lambda x: T.sort(x, axis=1),
-    abs=abs,
     log_abs=lambda x: T.log(abs(x) + eps),  # this is awesome
     log_abs_p1=lambda x: T.log(abs(x) + 1),
     log_relu=lambda x: T.log(T.nnet.relu(x) + eps),
@@ -47,17 +40,24 @@ NONLIN_TABLE = dict(
 )
 
 
-def get_func(rng, nonlin, hidden_size=100, nr_hidden=3,
+def get_func(rng, nonlin,
+             hidden_size=100,
+             nr_hidden=3,
              input_dim=2,
-             output_dim=1, recurrent=False,
+             output_dim=1,
+             recurrent=False,
              output_nonlin=lambda x: x,
              use_bias=True,
-             std=1, mean=0):
-    '''return function of [0,1]^2 -> intensity \in [0, 1]^c '''
+             std=1,
+             mean=0):
+    """return function of [0,1]^2 -> intensity \in [0, 1]^c """
+
+    # Defining a tensor matrix for coordinates
     coords = T.matrix()
     v = coords
 
     def get_weights(shape):
+        """Generates random weights and bias for a hidden layer."""
         W = theano.shared(rng.randn(*shape) * std + mean)
         if use_bias:
             b = theano.shared(rng.randn(shape[1]) * std + mean)
@@ -73,9 +73,11 @@ def get_func(rng, nonlin, hidden_size=100, nr_hidden=3,
         W, b = get_weights(shape)
         return apply_linear(v, W, b)
 
+    # Send input to the first layer.
     v = make_linear(v, (input_dim, hidden_size))
     v = nonlin(v)
 
+    # Forward propagation of input through hidden layers
     hidden_shape = (hidden_size, hidden_size)
     W, b = None, None
     for i in range(nr_hidden):
@@ -84,6 +86,7 @@ def get_func(rng, nonlin, hidden_size=100, nr_hidden=3,
         v = apply_linear(v, W, b)
         v = nonlin(v)
 
+    # Output layer
     v = make_linear(v, (hidden_size, output_dim))
     v = output_nonlin(v)
     v = (v - v.min(axis=0, keepdims=True)) / (
@@ -93,16 +96,21 @@ def get_func(rng, nonlin, hidden_size=100, nr_hidden=3,
 
 
 def draw(func, w, h, coord_bias=False):
-    coords = np.array(np.meshgrid(np.arange(h), np.arange(w))[::-1],
-                      dtype='float32').reshape((2, -1)).swapaxes(0, 1) / [w, h]
+    # h = 2 * h
+    # w = 2 * w
+    img_grid = np.meshgrid(np.arange(h), np.arange(w))[::-1]
+    coords = np.array(img_grid, dtype='float32')
+    coords = coords.reshape((2, -1)).swapaxes(0, 1) / [w, h]
 
     if coord_bias:
-        coords = np.concatenate((coords, np.ones((coords.shape[0], 1))), axis=1)
+        coords = np.concatenate(
+            (coords, np.ones((coords.shape[0], 1))), axis=1)
     coords = coords.astype('float32')
 
     img = (func(coords).reshape((w, h, -1)) * 255).astype('uint8')
+    print(img.shape)
     if img.shape[2] == 1:
-        img = img[:,:]
+        img = img[:, :]
     return img
 
 
@@ -171,17 +179,25 @@ def get_args():
 
 
 def run(args):
+    # Random number generator
     rng = np.random.RandomState(args.seed)
 
+    # Width and height of the image to be created
     w, h = map(int, args.image_size.split('x'))
 
+    # Getting random input non-linear function
     nonlin = get_nonlin(args.nonlin, rng)
+
+    # Getting fixed output non-linear function
     output_nonlin = get_nonlin(args.output_nonlin, rng)
 
-
+    # Batch normalization block
     if args.batch_norm:
-        batch_norm=lambda x: (x - T.mean(x, axis=1, keepdims=True)) / T.std(
+        batch_norm = lambda x: (x - T.mean(x, axis=1, keepdims=True)) / T.std(
             x, axis=1, keepdims=True)
+
+        # Converts the input non-linear function to a batch-normalized
+        # function.
         def add_bn(nonlin):
             def func(x):
                 if args.batch_norm_position == 'before_nonlin':
@@ -198,17 +214,24 @@ def run(args):
         input_dim += 1
 
     print('Compiling...')
-    func = get_func(rng, nonlin, hidden_size=args.hidden_size,
-                    nr_hidden=args.nr_hidden,
-                    input_dim=input_dim,
-                    output_dim=args.nr_channel,
-                    recurrent=args.recurrent,
-                    output_nonlin=output_nonlin,
-                    use_bias=args.use_bias)
+
+    # Generating the black-box neural network function
+    func = get_func(
+        rng,
+        nonlin,
+        hidden_size=args.hidden_size,
+        nr_hidden=args.nr_hidden,
+        input_dim=input_dim,
+        output_dim=args.nr_channel,
+        recurrent=args.recurrent,
+        output_nonlin=output_nonlin,
+        use_bias=args.use_bias
+    )
 
     print('Drawing...')
     img = draw(func, w, h, coord_bias=args.coord_bias)
 
+    # Print the art
     if args.output:
         output = args.output
         name, ext = os.path.splitext(output)
@@ -226,6 +249,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
-
-# vim: foldmethod=marker
